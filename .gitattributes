@@ -1,0 +1,26 @@
+# Line endings: the repository stores LF, and working trees get LF on every
+# platform (Windows, Linux dev servers, AI sandboxes), regardless of the
+# developer's core.autocrlf setting.
+* text=auto eol=lf
+
+# Shell scripts must stay LF even on Windows checkouts.
+*.sh text eol=lf
+
+# Windows-only scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets: never converted, never diffed as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.docx binary
+*.xlsx binary
