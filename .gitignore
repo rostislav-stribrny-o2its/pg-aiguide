@@ -1,0 +1,8 @@
+# This branch only stores agent skills (.claude/skills). Keep OS and editor clutter out.
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/
