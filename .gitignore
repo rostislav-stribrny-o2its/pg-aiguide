@@ -1,28 +1,8 @@
-# Node / TypeScript build output
-dist
-node_modules
-
-.env
-.idea
-.migrate
-.mcpregistry_*
-download/
-server.json
-.claude/*.local.*
-.opencode/plans
-
-# Python
-# Match at any depth, not just the top level of ingest/
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-.ruff_cache/
-.pytest_cache/
-
-# Ingest scratch output
-ingest/build
-ingest/postgres
-
-# Temporary files directory
-tmp/
+# This branch only stores agent skills (.claude/skills). Keep OS and editor clutter out.
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/

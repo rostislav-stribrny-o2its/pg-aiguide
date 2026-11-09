@@ -1,0 +1,28 @@
+# Node / TypeScript build output
+dist
+node_modules
+
+.env
+.idea
+.migrate
+.mcpregistry_*
+download/
+server.json
+.claude/*.local.*
+.opencode/plans
+
+# Python
+# Match at any depth, not just the top level of ingest/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+# Ingest scratch output
+ingest/build
+ingest/postgres
+
+# Temporary files directory
+tmp/
