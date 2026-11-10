@@ -24,3 +24,9 @@
 *.ttf binary
 *.docx binary
 *.xlsx binary
+
+# Our own root files replace the upstream ones: on merges from upstream keep ours.
+# Needs "git config merge.ours.driver true" in the clone (set by setup/sync scripts).
+# The upstream originals are kept in _unused/root/.
+/README.md merge=ours
+/.gitignore merge=ours
