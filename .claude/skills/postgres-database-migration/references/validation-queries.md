@@ -2,7 +2,7 @@
 
 ## Pre-Migration Validation
 
-Run these checks **before** applying a migration. On a database fork, you can run them against real production data without any risk.
+Run these checks **before** applying a migration. On a copy of production data (restored backup or dump), you can run them against real data without touching production.
 
 ### Check for NULLs Before Adding NOT NULL
 
@@ -72,7 +72,7 @@ WHERE relname = 'orders';
 
 -- Estimate backfill time: run a small batch and extrapolate
 -- WARNING: EXPLAIN ANALYZE actually executes the statement — this WILL update rows.
--- Run this on a fork, or wrap in a transaction and ROLLBACK after.
+-- Run this on a copy of production data, or wrap in a transaction and ROLLBACK after.
 BEGIN;
 EXPLAIN ANALYZE
 UPDATE orders SET amount_new = amount::NUMERIC(12,2)
@@ -141,3 +141,8 @@ SELECT relname, seq_scan, idx_scan
 FROM pg_stat_user_tables
 WHERE relname = 'orders';
 ```
+
+---
+
+Modified for the Elysium Java base — this file has been changed from the original (provider forks replaced by a copy of production data).
+Source: [timescale/pg-aiguide](https://github.com/timescale/pg-aiguide), `skills/postgres-database-migration/references/validation-queries.md`, Apache License 2.0.
