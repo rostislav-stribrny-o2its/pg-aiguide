@@ -9,18 +9,20 @@ description: |
   - Change a column's data type without downtime
   - Add or drop indexes, constraints, or foreign keys on large tables
   - Understand which ALTER TABLE operations lock the table
-  - Roll back a failed migration
+  - Recover from a failed migration (forward fix)
   - Plan a zero-downtime migration strategy
-  - Fork a database to test a migration safely
+  - Test a migration on a copy of production data
 
-  **Keywords:** migration, schema change, ALTER TABLE, add column, drop column, rename column, change type, zero downtime, lock, AccessExclusiveLock, concurrent index, forking, rollback, backfill, deploy
+  **Keywords:** migration, schema change, ALTER TABLE, add column, drop column, rename column, change type, zero downtime, lock, AccessExclusiveLock, concurrent index, production copy, forward fix, backfill, deploy, Flyway
 
-  Covers: lock-level reference for every common DDL operation, safe migration patterns, fork-based testing, zero-downtime column changes, index creation, constraint addition, backfill strategies, pre/post-migration validation, and rollback planning.
+  Covers: lock-level reference for every common DDL operation, safe migration patterns, testing on a copy of production data, zero-downtime column changes, index creation, constraint addition, backfill strategies, pre/post-migration validation, and forward-only recovery planning.
 ---
 
 # PostgreSQL Database Migrations
 
 A schema migration that works on an empty dev database can fail, lock, or corrupt data on a production table with millions of rows. This guide covers how to assess risk, test against real data, and execute migrations safely.
+
+**In the Elysium Java base (PostgreSQL 18)** every schema change is a Flyway migration file (`V<NNNNN>__…sql`, see the `flyway-migrations` skill), applied by Flyway in every environment — never typed into a production console. This skill is the reference for what those files contain: lock levels, safe patterns, timeouts, backfills and validation. Migrations are forward-only: there are no down/undo migrations.
 
 ## DDL Lock Reference
 
@@ -50,9 +52,9 @@ These rewrite the table or scan all rows. On large tables, they can lock out all
 
 | Operation | Lock Level | Why It's Slow |
 |-----------|-----------|---------------|
-| `ADD COLUMN ... DEFAULT x` (volatile, e.g. `now()`, `gen_random_uuid()`) | `AccessExclusiveLock` | Full table rewrite. Every row gets the computed value. |
+| `ADD COLUMN ... DEFAULT x` (volatile, e.g. `clock_timestamp()`, `gen_random_uuid()`, `random()`) | `AccessExclusiveLock` | Full table rewrite. Every row gets the computed value. (`now()` is stable, not volatile: it is fast, and every existing row gets the migration's timestamp.) |
 | `ALTER COLUMN TYPE` (most type changes) | `AccessExclusiveLock` | Full table rewrite to convert stored data. |
-| `SET NOT NULL` (PG < 12, or without existing CHECK) | `AccessExclusiveLock` | Full table scan to verify no NULLs. See safe pattern below. |
+| `SET NOT NULL` (without a validated CHECK or NOT NULL constraint) | `AccessExclusiveLock` | Full table scan to verify no NULLs. See safe pattern below. |
 | `ADD CONSTRAINT ... CHECK/UNIQUE/FK` (validated) | `AccessExclusiveLock` or `ShareRowExclusiveLock` | Scans all rows to verify, blocks writes. |
 | `CREATE INDEX` (without CONCURRENTLY) | `ShareLock` | Blocks writes for the entire build duration. |
 | `CLUSTER` | `AccessExclusiveLock` | Rewrites entire table in index order. |
@@ -71,13 +73,16 @@ ALTER TABLE orders ADD COLUMN tracking_number TEXT;
 -- SAFE (PG 11+): column with non-volatile default — instant
 ALTER TABLE orders ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
 
--- UNSAFE: column with volatile default — full table rewrite
--- DON'T: ALTER TABLE orders ADD COLUMN created_at TIMESTAMPTZ DEFAULT now();
+-- FAST but note: now() is STABLE — existing rows all get the migration's timestamp
+ALTER TABLE orders ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+-- UNSAFE: column with a VOLATILE default — full table rewrite
+-- DON'T: ALTER TABLE orders ADD COLUMN public_ref UUID DEFAULT gen_random_uuid();
 -- DO: add nullable, then backfill, then set default + NOT NULL
-ALTER TABLE orders ADD COLUMN created_at TIMESTAMPTZ;
--- Backfill in batches (see Backfill section)
-ALTER TABLE orders ALTER COLUMN created_at SET DEFAULT now();
-ALTER TABLE orders ALTER COLUMN created_at SET NOT NULL;  -- only if PG12+ or CHECK exists
+ALTER TABLE orders ADD COLUMN public_ref UUID;
+-- Backfill in batches (see Backfill section; large backfills run outside the migration)
+ALTER TABLE orders ALTER COLUMN public_ref SET DEFAULT gen_random_uuid();
+-- SET NOT NULL scans the table unless a validated constraint proves it — see "Add a NOT NULL Constraint"
 ```
 
 ### Drop a Column
@@ -96,11 +101,11 @@ ALTER TABLE orders DROP COLUMN old_status;
 ### Rename a Column
 
 ```sql
--- SAFE: instant metadata change
+-- Instant metadata change — but only safe when NO deployed code, view or function uses the column
 ALTER TABLE orders RENAME COLUMN status TO order_status;
 ```
 
-**Warning:** This breaks any application code, views, or functions that reference the old column name. For zero-downtime deploys, use the column-swap pattern instead:
+**Warning:** The lock is brief, but the rename breaks any running application code, views, or functions that reference the old column name. On a live table use the column-swap (expand/contract) pattern instead, spread across releases as separate Flyway migrations:
 1. Add the new column
 2. Deploy code that writes to both columns
 3. Backfill old rows
@@ -140,23 +145,23 @@ ALTER TABLE orders RENAME COLUMN amount_new TO amount;
 ### Add a NOT NULL Constraint
 
 ```sql
--- PG 18+: simplified two-step pattern
-ALTER TABLE orders ALTER COLUMN order_status SET NOT NULL NOT VALID;
-ALTER TABLE orders VALIDATE NOT NULL ON order_status;
+-- PG 18: a NOT NULL constraint can be added NOT VALID and validated later
+-- (each statement in its own Flyway migration file, so the first lock is released)
+ALTER TABLE orders ADD CONSTRAINT orders_status_nn NOT NULL order_status NOT VALID;
+ALTER TABLE orders VALIDATE CONSTRAINT orders_status_nn;
+-- (syntax per the PostgreSQL 18 ALTER TABLE reference; if in doubt use the CHECK pattern below)
 
--- PG 12–17: fast if a valid CHECK constraint already exists
+-- Any supported version: fast if a validated CHECK constraint already exists
 -- Step 1: add CHECK (non-blocking scan)
 ALTER TABLE orders ADD CONSTRAINT orders_status_nn CHECK (order_status IS NOT NULL) NOT VALID;
 ALTER TABLE orders VALIDATE CONSTRAINT orders_status_nn;
 
--- Step 2: add NOT NULL (PG12+ recognizes the CHECK and skips the scan)
+-- Step 2: add NOT NULL (PostgreSQL recognizes the validated CHECK and skips the scan)
 ALTER TABLE orders ALTER COLUMN order_status SET NOT NULL;
 
 -- Step 3: drop the now-redundant CHECK
 ALTER TABLE orders DROP CONSTRAINT orders_status_nn;
 
--- PG < 12: SET NOT NULL always scans the full table.
--- Ensure no NULLs exist first, then accept the brief lock.
 ```
 
 ### Add a Foreign Key
@@ -181,6 +186,7 @@ ALTER TABLE orders VALIDATE CONSTRAINT fk_user;
 -- DON'T: CREATE INDEX idx_orders_user ON orders (user_id);
 
 -- SAFE: concurrent index creation (allows reads and writes)
+-- Flyway: every CONCURRENTLY statement goes ALONE into its own V file
 CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id);
 
 -- IMPORTANT: if concurrent index creation fails (crashes, deadlock),
@@ -195,7 +201,7 @@ SELECT indexrelid::regclass AS index_name, indisvalid
 FROM pg_index
 WHERE NOT indisvalid;
 
--- Drop and retry if invalid
+-- Drop and retry if invalid — as two NEW migrations (one statement each), never by editing the released file
 DROP INDEX CONCURRENTLY idx_orders_user;
 CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id);
 ```
@@ -205,10 +211,10 @@ CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id);
 ```sql
 -- A UNIQUE constraint creates an index. Use CONCURRENTLY to avoid blocking:
 
--- Step 1: create a unique index concurrently
+-- Step 1 (own V file): create a unique index concurrently
 CREATE UNIQUE INDEX CONCURRENTLY idx_orders_tracking_uniq ON orders (tracking_number);
 
--- Step 2: attach it as a constraint (instant)
+-- Step 2 (next V file): attach it as a constraint (instant)
 ALTER TABLE orders ADD CONSTRAINT orders_tracking_uniq UNIQUE USING INDEX idx_orders_tracking_uniq;
 ```
 
@@ -224,11 +230,11 @@ ALTER TABLE orders ADD CONSTRAINT orders_new_id_nn
 -- Step 2: validate existing rows (allows concurrent reads and writes)
 ALTER TABLE orders VALIDATE CONSTRAINT orders_new_id_nn;
 
--- Step 3: build unique index concurrently (non-blocking)
+-- Step 3 (own V file): build unique index concurrently (non-blocking)
 CREATE UNIQUE INDEX CONCURRENTLY idx_orders_new_pkey
     ON orders (new_id);
 
--- Step 4: drop the old PK
+-- Step 4 (next V file, together with steps 5 and 6): drop the old PK
 ALTER TABLE orders DROP CONSTRAINT orders_pkey;
 
 -- Step 5: add new PK using the existing index (instant — also implicitly adds NOT NULL)
@@ -249,24 +255,25 @@ ALTER TABLE orders DROP CONSTRAINT orders_tracking_uniq;
 
 -- If dropping a FK that has a supporting index you no longer need:
 ALTER TABLE orders DROP CONSTRAINT fk_user;
-DROP INDEX idx_orders_user_id;  -- only if no other queries use it
+-- then, in its own V file, only if no other queries use it:
+DROP INDEX CONCURRENTLY idx_orders_user;
 ```
 
 ## Backfill Strategies
 
-Always backfill in batches — never in a single UPDATE. See [backfill-strategies](references/backfill-strategies.md) for batch-by-PK patterns, resumable progress tracking, and tuning guidance.
+Always backfill in batches — never in a single UPDATE. A Flyway migration file is ONE transaction, so a batched backfill with commits between batches cannot live in it. Small tables (a quick single UPDATE) may be backfilled in the V migration; large backfills run as a restartable, idempotent job of the application (or a controlled script run as a release step), between the migration that adds the column and the later migration that adds the constraint. See [backfill-strategies](references/backfill-strategies.md) for batch-by-PK patterns, resumable progress tracking, and tuning guidance.
 
 ## Migration Validation
 
 Run validation queries before and after every migration. See [validation-queries](references/validation-queries.md) for the full set of checks: NULL detection, duplicate detection, orphan rows, cast failures, duration estimation, schema verification, data integrity, and query performance.
 
-## Rollback Planning
+## Recovery Planning (forward-only)
 
-Every migration should have a rollback plan documented before execution.
+Migrations are never rolled back by a down/undo script and a deployed migration file is never edited. Every migration has a documented **recovery** before execution: how a mistake is corrected by the **next** migration, and — for irreversible steps — which backup restores the data.
 
-### Reversible Operations
+### Operations a follow-up migration can reverse
 
-| Operation | Rollback |
+| Operation | Reversed by a new migration with |
 |-----------|----------|
 | `ADD COLUMN` | `DROP COLUMN` |
 | `ADD CONSTRAINT` | `DROP CONSTRAINT` |
@@ -277,49 +284,46 @@ Every migration should have a rollback plan documented before execution.
 
 ### Irreversible Operations
 
-These require restoring from a backup or the database fork to undo:
+These cannot be undone by a follow-up migration; they need a verified backup taken before the release, and a restore plan:
 
 - **`DROP COLUMN`** — data is gone once VACUUM reclaims it
 - **`ALTER COLUMN TYPE`** with lossy cast (e.g., `NUMERIC` → `INTEGER`, `TEXT` → `VARCHAR(50)`)
 - **`DELETE` / `TRUNCATE`** during data cleanup
 - **`DROP TABLE`**
 
-**This is where a database fork is invaluable.** If you forked before the migration, the original database has the pre-migration state. If the migration went wrong, your production data is untouched — just delete the fork and start over.
+Test such migrations on a copy of production data first (see **Testing on a Copy of Production Data**), and prefer expand/contract so that the destructive step runs only after the new structure has proven itself in production.
 
 ## Transaction Strategy
 
+Flyway runs each migration file in its own transaction (on PostgreSQL), so **one file = one transaction**: never write `BEGIN`/`COMMIT` in a migration. To get "separate transactions", split the statements into separate migration files; non-transactional statements (`CREATE/DROP INDEX CONCURRENTLY`) must be alone in their file. The two approaches below translate to: several statements in one file vs. one statement per file.
+
 There are two approaches for executing multiple DDL statements. Each has tradeoffs:
 
-**Wrapped in one transaction** — all changes succeed or all roll back. Use this when atomicity matters more than lock duration, and all operations are fast (milliseconds).
+**One file (one transaction)** — all changes succeed or all roll back. Use this when atomicity matters more than lock duration, and all operations are fast (milliseconds).
 
 ```sql
-BEGIN;
-
+-- V00051__orders_priority_and_tags.sql — Flyway wraps the whole file in one transaction
+SET LOCAL lock_timeout = '5s';
 ALTER TABLE orders ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE orders ADD COLUMN tags TEXT[] NOT NULL DEFAULT '{}';
-CREATE INDEX ON orders USING GIN (tags);
-ALTER TABLE orders DROP COLUMN old_priority;
-
--- Verify before committing
-SELECT column_name, data_type
-FROM information_schema.columns
-WHERE table_name = 'orders'
-ORDER BY ordinal_position;
-
-COMMIT;
--- Or ROLLBACK; if something looks wrong
-```
-
-**Separate transactions** — each DDL runs and commits independently. Use this when lock duration matters more than atomicity. In a single transaction, all locks are held until `COMMIT` — so if you have 5 DDL statements, the `AccessExclusiveLock` from the first one blocks traffic for the entire duration of all 5. Separate transactions release locks between statements.
-
-```sql
--- Each statement auto-commits
-ALTER TABLE orders ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE orders ADD COLUMN tags TEXT[] NOT NULL DEFAULT '{}';
+CREATE INDEX ON orders USING GIN (tags);   -- acceptable only on a small or new table
 ALTER TABLE orders DROP COLUMN old_priority;
 ```
 
-**The tradeoff:** separate transactions can leave the schema in a partially migrated state if a later statement fails. You'll need a rollback plan for each step individually.
+Verify the result in the CI database and on the copy of production data, not with a `SELECT` inside the migration.
+
+**One file per statement (separate transactions)** — each file is applied and committed on its own. Use this when lock duration matters more than atomicity. In a single transaction, all locks are held until commit — so if you have 5 DDL statements, the `AccessExclusiveLock` from the first one blocks traffic for the entire duration of all 5. Separate files release locks between statements.
+
+```sql
+-- V00051__add_orders_priority.sql
+ALTER TABLE orders ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+-- V00052__add_orders_tags.sql
+ALTER TABLE orders ADD COLUMN tags TEXT[] NOT NULL DEFAULT '{}';
+-- V00053__drop_orders_old_priority.sql
+ALTER TABLE orders DROP COLUMN old_priority;
+```
+
+**The tradeoff:** separate transactions can leave the schema in a partially migrated state if a later statement fails. With Flyway each file is applied and recorded on its own, so the failed file is fixed and the release re-run; plan the recovery of each step individually.
 
 **Cannot use transactions with:**
 - `CREATE INDEX CONCURRENTLY` (explicitly disallowed inside a transaction)
@@ -357,8 +361,10 @@ Pick based on your traffic profile: the higher your query throughput, the shorte
 
 ```sql
 -- Fail fast instead of blocking all queries behind you
-SET lock_timeout = '5s';
-SET statement_timeout = '30s';
+-- (SET LOCAL: scoped to the Flyway transaction of this file; has no effect in a
+--  non-transactional CONCURRENTLY file — there use the session form and RESET at the end)
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
 
 ALTER TABLE orders ADD COLUMN tracking_number TEXT;
 
@@ -383,7 +389,7 @@ RESET statement_timeout;
 
 ### The Retry-With-Timeout Pattern
 
-For automated migration runners, wrap DDL in a retry loop with a short lock timeout:
+The simplest form under Flyway: start the migration with `SET LOCAL lock_timeout = '5s';`. If the lock is not available, the migration fails, its transaction rolls back, nothing is recorded, and the deployment is retried later. For DDL that must get through on a busy table, a retry loop inside the migration is possible:
 
 ```sql
 DO $$
@@ -394,7 +400,7 @@ DECLARE
 BEGIN
     WHILE attempt <= max_attempts AND NOT success LOOP
         BEGIN
-            SET lock_timeout = '3s';
+            SET LOCAL lock_timeout = '3s';   -- transaction-scoped; never leaks to the pooled connection
             -- Replace with your DDL statement
             ALTER TABLE orders ADD COLUMN tracking_number TEXT;
             success := TRUE;
@@ -418,26 +424,25 @@ This prevents the migration from creating a pile-up of blocked queries behind it
 **Alternative: `NOWAIT`** — For the highest-traffic systems, use `LOCK TABLE ... NOWAIT` to test lock availability before running DDL. Unlike `lock_timeout`, `NOWAIT` fails instantly without ever entering the lock queue, so there is zero risk of cascading blocked queries. The tradeoff is more retries:
 
 ```sql
-BEGIN;
+-- V00054__add_orders_tracking_number.sql (Flyway provides the transaction; no BEGIN/COMMIT)
 LOCK TABLE orders IN ACCESS EXCLUSIVE MODE NOWAIT;
 -- If we get here, we have the lock — run DDL
 ALTER TABLE orders ADD COLUMN tracking_number TEXT;
-COMMIT;
--- If LOCK fails with "could not obtain lock", retry after a short sleep
+-- If LOCK fails with "could not obtain lock", the migration fails cleanly; retry the deployment
 ```
 
-## Fork-Based Migration Testing
+## Testing on a Copy of Production Data
 
-The safest way to test a migration is to run it against a copy of your actual database — same schema, same data, same edge cases. Providers such as [Neon](https://neon.tech) support fast database forking. Without database forking, you need to manually dump and restore your database, which can take a long time for large datasets.
+The safest way to test a migration is to run it against a copy of your actual database — same schema, same data, same edge cases. Every pull request already migrates an empty database and upgrades from the last release in CI (see `flyway-migrations`); for risky migrations on large tables, also run them on a copy with production volumes. Copies of production data are handled under the project's data-protection rules (anonymized or in an environment cleared for that data).
 
-### With Forking
+### Procedure
 
-1. **Fork your database** — create a full copy using your provider's fork feature (takes seconds)
-2. **Inspect the current schema** on the fork to confirm it matches production
-3. **Run your migration** on the fork
-4. **Validate** — run your checks (see Pre/Post-Migration Validation sections above)
-5. **If it worked:** apply the same migration to production
-6. **If it failed:** delete the fork — your production database is untouched
+1. **Create the copy** — restore the latest backup or a dump into a separate test database (see below)
+2. **Inspect the current schema** on the copy and check `flyway info` matches production
+3. **Run the release's migrations** on the copy with Flyway, exactly as the deployment will
+4. **Validate** — run your checks (see Pre/Post-Migration Validation sections above) and record the duration
+5. **If it worked:** release the same migration files
+6. **If it failed:** fix it with a changed **unreleased** file or a follow-up migration, drop the copy, repeat
 
 This catches problems that never show up in empty test databases:
 - Data that violates a new constraint
@@ -445,9 +450,9 @@ This catches problems that never show up in empty test databases:
 - Migrations that are fast on 100 rows but lock the table for minutes on 10 million
 - Index creation that runs out of memory or disk space
 
-**Limitation:** fork-based testing runs your migration in isolation — it won't catch issues caused by concurrent database traffic (e.g., lock contention under load, deadlocks with concurrent writes, or replication lag from heavy WAL generation). For most applications, fork-based testing is sufficient. For very high-uptime applications, use [PgDog](https://pgdog.dev)'s mirroring feature to replay production traffic against the fork — it reproduces queries byte-for-byte with realistic timing, and you can filter to DDL-only or DML-only and control exposure percentage to ramp up gradually.
+**Limitation:** testing on a copy runs your migration in isolation — it won't catch issues caused by concurrent database traffic (e.g., lock contention under load, deadlocks with concurrent writes, or replication lag from heavy WAL generation). Cover those with `lock_timeout`, small batches and a release window agreed with operations.
 
-### Without Forking
+### Creating the copy
 
 Create a test database from a backup or dump:
 
@@ -465,7 +470,7 @@ createdb migration_test -T my_app_db
 
 ## Complete Migration Example
 
-For a full end-to-end walkthrough (plan, fork, run, validate, apply, clean up), see [complete-example](references/complete-example.md).
+For a full end-to-end walkthrough (plan, test on a copy, validate, release, clean up), see [complete-example](references/complete-example.md).
 
 ## Advanced Considerations
 
@@ -477,10 +482,21 @@ For a full end-to-end walkthrough (plan, fork, run, validate, apply, clean up), 
 
 1. **Testing migrations on empty tables** — a migration that runs in 1ms on an empty table can lock a 10M-row table for minutes. Always test against realistic data volumes.
 2. **Forgetting `CONCURRENTLY` on index creation** — `CREATE INDEX` (without `CONCURRENTLY`) blocks all writes. On a table with active traffic, this causes downtime.
-3. **Adding NOT NULL without the two-step pattern** — on large tables in PG < 12, `SET NOT NULL` scans every row while holding `AccessExclusiveLock`. Use the CHECK constraint pattern.
-4. **No lock timeout** — a fast ALTER TABLE can block behind a long-running query, and every subsequent query stacks up behind it. Always `SET lock_timeout` for production DDL.
+3. **Adding NOT NULL without the two-step pattern** — `SET NOT NULL` scans every row while holding `AccessExclusiveLock` unless a validated constraint already proves it. Use the NOT VALID + VALIDATE pattern.
+4. **No lock timeout** — a fast ALTER TABLE can block behind a long-running query, and every subsequent query stacks up behind it. Start every migration that takes strong locks on a live table with `SET LOCAL lock_timeout = '5s';` (transaction-scoped inside the Flyway transaction).
 5. **Backfilling in one big transaction** — a single `UPDATE orders SET x = y` on 10M rows generates enormous WAL, bloats the table, and holds locks for the entire duration. Always batch.
 6. **Leaving invalid indexes behind** — if `CREATE INDEX CONCURRENTLY` fails, it leaves an invisible invalid index that consumes space and slows writes. Check `pg_index.indisvalid` after every concurrent index operation.
 7. **Dropping columns before updating application code** — in a running system, the old code still references the column. Deploy the code change first, then drop the column in a subsequent migration.
 8. **Not checking replication lag** — large backfills generate heavy WAL. If you have read replicas, monitor `pg_stat_replication` during and after the migration.
 9. **Assuming ALTER COLUMN TYPE is safe** — most type changes rewrite the entire table. Use the add-new-column + backfill + swap pattern for large tables.
+10. **Writing a down migration or editing a released file** — Flyway's checksum fails in every environment; fix forward with a new `V` migration.
+11. **Running DDL by hand** — every change goes through a Flyway migration file so that all environments stay identical.
+
+## Provenance
+
+Modified for the Elysium Java base (PostgreSQL 18, Flyway, forward-only migrations) — this file has been changed from the original.
+Source: [timescale/pg-aiguide](https://github.com/timescale/pg-aiguide), `skills/postgres-database-migration`,
+Apache License 2.0 (see the repository `LICENSE` and `NOTICE`: Copyright 2025 Timescale, Inc., d/b/a Tiger Data).
+Changes: Flyway context (one file = one transaction, no BEGIN/COMMIT, `SET LOCAL`, backfills outside migrations, CONCURRENTLY alone in its file),
+forward-only recovery instead of rollback, PG18 NOT VALID NOT NULL syntax corrected, `now()` treated as stable (fast default),
+testing on a copy of production data instead of provider forks (Neon, PgDog removed), rename aligned with expand/contract.
