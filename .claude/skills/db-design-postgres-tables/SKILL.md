@@ -1,5 +1,5 @@
 ---
-name: design-postgres-tables
+name: db-design-postgres-tables
 description: |
   Use this skill for general PostgreSQL table design.
 
@@ -21,7 +21,7 @@ metadata:
 
 # PostgreSQL Table Design
 
-Target: **PostgreSQL 18**. The schema is changed only by Flyway migrations (see the `flyway-migrations` skill); the application accesses it with Spring Data JDBC and `JdbcClient`.
+Target: **PostgreSQL 18**. The schema is changed only by Flyway migrations (see the `db-flyway-migrations` skill); the application accesses it with Spring Data JDBC and `JdbcClient`.
 
 ## Core Rules
 
