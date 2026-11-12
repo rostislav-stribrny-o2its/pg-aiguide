@@ -56,7 +56,7 @@ CREATE INDEX CONCURRENTLY orders_active_idx
 ```
 
 `spring.flyway.postgresql.transactional-lock=false` must be set, otherwise the
-`CONCURRENTLY` build waits on Flyway's own lock (see `flyway-migrations`).
+`CONCURRENTLY` build waits on Flyway's own lock (see `db-flyway-migrations`).
 
 ## Step 4: Validate on the Copy
 

@@ -1,5 +1,5 @@
 ---
-name: postgres-database-migration
+name: db-postgres-database-migration
 description: |
   Use this skill for planning, testing, and safely executing PostgreSQL schema migrations — especially when working with production data or shared databases.
 
@@ -22,7 +22,7 @@ description: |
 
 A schema migration that works on an empty dev database can fail, lock, or corrupt data on a production table with millions of rows. This guide covers how to assess risk, test against real data, and execute migrations safely.
 
-**In the Elysium Java base (PostgreSQL 18)** every schema change is a Flyway migration file (`V<NNNNN>__…sql`, see the `flyway-migrations` skill), applied by Flyway in every environment — never typed into a production console. This skill is the reference for what those files contain: lock levels, safe patterns, timeouts, backfills and validation. Migrations are forward-only: there are no down/undo migrations.
+**In the Elysium Java base (PostgreSQL 18)** every schema change is a Flyway migration file (`V<NNNNN>__…sql`, see the `db-flyway-migrations` skill), applied by Flyway in every environment — never typed into a production console. This skill is the reference for what those files contain: lock levels, safe patterns, timeouts, backfills and validation. Migrations are forward-only: there are no down/undo migrations.
 
 ## DDL Lock Reference
 
@@ -433,7 +433,7 @@ ALTER TABLE orders ADD COLUMN tracking_number TEXT;
 
 ## Testing on a Copy of Production Data
 
-The safest way to test a migration is to run it against a copy of your actual database — same schema, same data, same edge cases. Every pull request already migrates an empty database and upgrades from the last release in CI (see `flyway-migrations`); for risky migrations on large tables, also run them on a copy with production volumes. Copies of production data are handled under the project's data-protection rules (anonymized or in an environment cleared for that data).
+The safest way to test a migration is to run it against a copy of your actual database — same schema, same data, same edge cases. Every pull request already migrates an empty database and upgrades from the last release in CI (see `db-flyway-migrations`); for risky migrations on large tables, also run them on a copy with production volumes. Copies of production data are handled under the project's data-protection rules (anonymized or in an environment cleared for that data).
 
 ### Procedure
 

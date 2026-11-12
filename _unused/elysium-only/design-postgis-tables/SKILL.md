@@ -1,5 +1,5 @@
 ---
-name: design-postgis-tables
+name: db-design-postgis-tables
 description: Comprehensive PostGIS spatial table design reference covering geometry types, coordinate systems, spatial indexing, and performance patterns for location-based applications
 license: Apache-2.0
 compatibility: Requires PostgreSQL 15+ with the PostGIS extension

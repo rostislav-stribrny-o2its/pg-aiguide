@@ -1,5 +1,5 @@
 ---
-name: schema-exploration
+name: db-schema-exploration
 description: |
   Explore an existing PostgreSQL database before answering questions about its data or writing SQL. Use this skill whenever a user asks for a query or a data-backed answer against an unfamiliar schema (counts, missing or failed records, recent changes), asks where a business concept lives, or asks how tables, joins, views, routines, triggers, RLS, or extensions work. Find the relevant objects with read-only pg_catalog queries, then request approval before inspecting data-derived statistics or rows. Not a schema-design or migration guide.
 license: Apache-2.0
