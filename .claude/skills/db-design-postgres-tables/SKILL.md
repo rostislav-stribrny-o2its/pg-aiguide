@@ -10,8 +10,7 @@ description: |
   - Understand PostgreSQL best practices for normalization, constraints, or indexing
   - Design update-heavy, upsert-heavy, or OLTP-style tables
 
-
-  **Keywords:** PostgreSQL schema, table design, data types, PRIMARY KEY, FOREIGN KEY, indexes, B-tree, GIN, JSONB, constraints, normalization, BCNF, lookup tables, identity columns, partitioning, row-level security
+  **Keywords:** PostgreSQL schema, table design, data types, PRIMARY KEY, FOREIGN KEY, indexes, B-tree, GIN, JSONB, constraints, normalization, BCNF, lookup tables, identity columns, partitioning
 
   Comprehensive reference covering data types, indexing strategies, constraints, JSONB patterns, partitioning, and PostgreSQL-specific best practices.
 license: Apache-2.0
@@ -82,9 +81,7 @@ Target: **PostgreSQL 18**. The schema is changed only by Flyway migrations (see 
 
 ## Row-Level Security
 
-Enable with `ALTER TABLE tbl ENABLE ROW LEVEL SECURITY`. Create policies: `CREATE POLICY user_access ON orders FOR SELECT TO app_users USING (user_id = current_user_id())`. Built-in user-based access control at the row level.
-
-Use RLS only when the project decides on it explicitly (for example several database consumers that must see different rows). By default authorization lives in the application; enabling RLS as well means two places of authorization and tests at the database level.
+**Not used by the template.** Authorization lives in the application (roles kept in the application database and checked by the backend); do not enable RLS or create policies.
 
 ## Constraints
 
