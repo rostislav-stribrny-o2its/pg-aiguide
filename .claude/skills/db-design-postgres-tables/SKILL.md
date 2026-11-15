@@ -92,10 +92,9 @@ updated_by  BIGINT REFERENCES persons (id) ON DELETE RESTRICT
 ### Naming
 
 - `snake_case`, unquoted. Primary key `id`; foreign key `<referenced table, singular>_id`.
-- Table names: singular (`customer`, `customer_order`) in a new schema; where the repository's
-  existing migrations use plural names (the stack's reference implementation does: `persons`,
-  `counters`), follow the repository — one convention per schema. Avoid reserved words (`user`,
-  `order`).
+- Table names: plural (`persons`, `roles`, `integration_runs`) across all schemas — one convention
+  everywhere. Exceptions: uncountable nouns (`integration_mirror`, `integration_staging`) and
+  library-defined names (`shedlock`). Avoid reserved words (`user`, `order`).
 - Constraint and index names: `idx_<table>_<columns>`, `uq_<table>_<columns>`,
   `fk_<table>_<column>`, `ck_<table>_<rule>`; an unnamed `PRIMARY KEY` / inline `UNIQUE` / inline
   `REFERENCES` keeps PostgreSQL's generated name.
@@ -164,7 +163,7 @@ CREATE INDEX idx_customer_note_customer_id ON customer_note (customer_id);
 - Agent uses `UUID` as primary key or `serial` — bounded `BIGINT` identity
 - Agent creates `ENUM` types or `CHECK (status IN (…))` — lookup table with FK
 - Agent uses `timestamp` without zone, `float` for money or `varchar` in a `text` schema — binding types
-- Agent mixes naming conventions inside one schema — follow the repository's existing migrations
+- Agent mixes naming conventions inside one schema — table names are plural (`persons`, `roles`, `integration_runs`; exceptions: `integration_mirror`, `integration_staging`, `shedlock`) and FKs are `<referenced table, singular>_id`
 - Agent treats partitioning, extensions or RLS in reference.md as defaults — only on decision
 
 ## Provenance
