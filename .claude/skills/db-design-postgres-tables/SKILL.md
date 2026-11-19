@@ -32,17 +32,21 @@ rules leave open.
 ## Binding rules
 
 - **Normalize to at least BCNF, aim for 5NF** in the logical model; denormalize only for measured,
-  high-ROI reads, and record why (ADR-00008 point 2).
+  high-ROI reads, and record why (ADR-STACK-00005 point 2).
 - **Integrity in the database, business logic in the services.** Declarative constraints (PK, FK,
   UNIQUE, CHECK, EXCLUDE, NOT NULL) belong here; no triggers or procedures with business logic. A
-  trigger may only guard integrity or immutability (example: an append-only table) (ADR-00008
+  trigger may only guard integrity or immutability (example: an append-only table) (ADR-STACK-00005
   point 3).
 - **Primary key** on every entity table: `BIGINT GENERATED ALWAYS AS IDENTITY (MAXVALUE
   9007199254740991)` — the bound 2^53−1 keeps every ID exact as a JSON number. **Never `UUID` as a
   primary key**; an opaque public identifier, when really needed, is a separate `UNIQUE` column.
 - **Enumerated values are lookup tables** with a foreign key, rows shipped in `V` migrations —
   not `CREATE TYPE … AS ENUM`, not a free-text column with `CHECK (… IN (…))`. A lookup table has a
-  small explicit key (`smallint`, assigned in the migration) and a unique `code` (ADR-00008 point 8).
+  `code VARCHAR(n)` primary key (the stable value the aggregate stores) and a `name`; the column holding
+  it is `VARCHAR(n) REFERENCES <lookup> (code)` (canonical `counter_status` in
+  `backend/backend-service/src/main/resources/db/migration/V00010__create_counter.sql`; ADR-STACK-00005 point 8).
+  A free-text status column found in existing code gets a CHECK (added `NOT VALID`, validated
+  separately, `db-postgres-database-migration`) or a lookup in a NEW migration, never an edit (exception in DB-004).
 - **Types:** `TIMESTAMPTZ` for instants (never `timestamp` without zone, `timetz` or a precision
   like `timestamptz(0)`; the one exception is ShedLock's own table, `be-scheduling-shedlock`), `DATE`
   for dates, `NUMERIC(p,s)` for money and every exact quantity (never float, never `money`),
@@ -53,7 +57,7 @@ rules leave open.
 - **NOT NULL** wherever the value is required; **DEFAULT** for common values.
 - **Row-level security** only by explicit project decision; authorization lives in the application.
 
-### Standard columns (ADR-00008 points 10, 15)
+### Standard columns (ADR-STACK-00005 points 10, 15)
 
 ```sql
 id          BIGINT GENERATED ALWAYS AS IDENTITY (MAXVALUE 9007199254740991) PRIMARY KEY,
@@ -61,13 +65,15 @@ id          BIGINT GENERATED ALWAYS AS IDENTITY (MAXVALUE 9007199254740991) PRIM
 version     BIGINT NOT NULL DEFAULT 0,                 -- aggregate root only: optimistic locking (@Version)
 created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-created_by  BIGINT REFERENCES persons (id) ON DELETE RESTRICT,   -- person id; NULL = system (job, migration)
-updated_by  BIGINT REFERENCES persons (id) ON DELETE RESTRICT
+created_by  BIGINT,                                        -- person id; NULL = system (job, migration)
+updated_by  BIGINT
 ```
 
 - `id` + `version` on every aggregate root; `created_at`, `updated_at`, `created_by`, `updated_by`
   on every table holding user data. Lookup tables and pure junction tables have none of the four.
   `persons` is an *example* name of the application's person table.
+  Deliberate exception: `created_by`/`updated_by` carry no foreign key, so hard deletion of a person stays
+  unblocked (comment of `backend/backend-service/src/main/resources/db/migration/V00013__add_audit_columns.sql`).
 - **Who fills them:** the service, on every write — times from the injected `Clock`, the person from
   `AppAuthentication.personId()` (`be-oauth2-resource-server`); jobs write `NULL` as the person.
   The database `DEFAULT now()` only covers an insert by plain SQL (migrations, test data). No
@@ -95,21 +101,19 @@ updated_by  BIGINT REFERENCES persons (id) ON DELETE RESTRICT
 - Table names: plural (`persons`, `roles`, `integration_runs`) across all schemas — one convention
   everywhere. Exceptions: uncountable nouns (`integration_mirror`, `integration_staging`) and
   library-defined names (`shedlock`). Avoid reserved words (`user`, `order`).
-- Constraint and index names: `idx_<table>_<columns>`, `uq_<table>_<columns>`,
-  `fk_<table>_<column>`, `ck_<table>_<rule>`; an unnamed `PRIMARY KEY` / inline `UNIQUE` / inline
-  `REFERENCES` keeps PostgreSQL's generated name.
+- Index names: `idx_<table>_<columns>` (also a `CREATE UNIQUE INDEX`); an inline `PRIMARY KEY` / `UNIQUE` /
+  `REFERENCES` / `CHECK` keeps PostgreSQL's generated name, as every migration does.
 
 ## Example (the one example set of the stack's database skills)
 
 ```sql
 -- V00002__create_order_status.sql — lookup table, reference data in the migration
 CREATE TABLE order_status (
-    id    SMALLINT PRIMARY KEY,                           -- explicit, assigned here
-    code  TEXT NOT NULL UNIQUE CHECK (length(code) <= 30),
-    name  TEXT NOT NULL
+    code  VARCHAR(30) PRIMARY KEY,
+    name  VARCHAR(100) NOT NULL
 );
-INSERT INTO order_status (id, code, name) VALUES
-    (1, 'PENDING', 'Pending'), (2, 'CONFIRMED', 'Confirmed'), (3, 'CANCELLED', 'Cancelled');
+INSERT INTO order_status (code, name) VALUES
+    ('pending', 'Pending'), ('confirmed', 'Confirmed'), ('cancelled', 'Cancelled');
 
 -- V00003__create_customer.sql
 CREATE TABLE customer (
@@ -119,25 +123,25 @@ CREATE TABLE customer (
     version     BIGINT NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by  BIGINT REFERENCES persons (id) ON DELETE RESTRICT,
-    updated_by  BIGINT REFERENCES persons (id) ON DELETE RESTRICT
+    created_by  BIGINT,
+    updated_by  BIGINT
 );
-CREATE UNIQUE INDEX uq_customer_lower_email ON customer (LOWER(email));
+CREATE UNIQUE INDEX idx_customer_lower_email ON customer (LOWER(email));
 
 -- V00004__create_customer_order.sql
 CREATE TABLE customer_order (
     id               BIGINT GENERATED ALWAYS AS IDENTITY (MAXVALUE 9007199254740991) PRIMARY KEY,
     customer_id      BIGINT NOT NULL REFERENCES customer (id) ON DELETE RESTRICT,
-    order_status_id  SMALLINT NOT NULL DEFAULT 1 REFERENCES order_status (id) ON DELETE RESTRICT,
+    status           VARCHAR(30) NOT NULL DEFAULT 'pending' REFERENCES order_status (code),
     total_amount     NUMERIC(19,2) NOT NULL CHECK (total_amount >= 0),
     version          BIGINT NOT NULL DEFAULT 0,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by       BIGINT REFERENCES persons (id) ON DELETE RESTRICT,
-    updated_by       BIGINT REFERENCES persons (id) ON DELETE RESTRICT
+    created_by       BIGINT,
+    updated_by       BIGINT
 );
 CREATE INDEX idx_customer_order_customer_id ON customer_order (customer_id);
-CREATE INDEX idx_customer_order_order_status_id ON customer_order (order_status_id);
+CREATE INDEX idx_customer_order_status ON customer_order (status);
 CREATE INDEX idx_customer_order_created_at ON customer_order (created_at);
 
 -- V00005__create_customer_note.sql — a child row without its own natural key
@@ -148,8 +152,8 @@ CREATE TABLE customer_note (
     version     BIGINT NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by  BIGINT REFERENCES persons (id) ON DELETE RESTRICT,
-    updated_by  BIGINT REFERENCES persons (id) ON DELETE RESTRICT
+    created_by  BIGINT,
+    updated_by  BIGINT
 );
 CREATE INDEX idx_customer_note_customer_id ON customer_note (customer_id);
 ```
@@ -161,7 +165,7 @@ CREATE INDEX idx_customer_note_customer_id ON customer_note (customer_id);
 - Agent writes a FK without `ON DELETE` — `RESTRICT` unless the child belongs to the parent
 - Agent forgets the index on a FK column — PostgreSQL does not create it
 - Agent uses `UUID` as primary key or `serial` — bounded `BIGINT` identity
-- Agent creates `ENUM` types or `CHECK (status IN (…))` — lookup table with FK
+- Agent creates `ENUM` types or `CHECK (status IN (…))` for a NEW enum column — lookup table with FK (an existing free-text column: DB-004 exception)
 - Agent uses `timestamp` without zone, `float` for money or `varchar` in a `text` schema — binding types
 - Agent mixes naming conventions inside one schema — table names are plural (`persons`, `roles`, `integration_runs`; exceptions: `integration_mirror`, `integration_staging`, `shedlock`) and FKs are `<referenced table, singular>_id`
 - Agent treats partitioning, extensions or RLS in reference.md as defaults — only on decision

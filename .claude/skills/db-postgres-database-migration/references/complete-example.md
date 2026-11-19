@@ -13,7 +13,7 @@ Migration: Add order status to orders
 - Files:  V00041__create_order_status.sql
           V00042__add_order_status_id_to_orders.sql
           V00043__validate_orders_order_status_fk.sql
-          V00044__index_orders_active.sql            (CONCURRENTLY, alone in its file)
+          V00044__index_orders_active.sql            (CONCURRENTLY index statements only, db-flyway-migrations "Index pattern")
 - Risk: Low (no rewrite: constant default on PG 11+; FK validated without blocking writes)
 - Recovery: forward only — a follow-up migration drops the index, constraint and column;
             no data is destroyed, so no restore is needed
@@ -84,8 +84,8 @@ SELECT * FROM orders WHERE order_status_id = 1 ORDER BY created_at DESC LIMIT 10
 
 The same four files are released; Flyway applies them in the deployment. Afterwards run the
 validation queries of Step 4 against production (read-only). If `CREATE INDEX CONCURRENTLY`
-failed and left an INVALID index, drop it in a NEW migration (`DROP INDEX CONCURRENTLY`, alone
-in its file) and re-create it in the next one — never edit the released file.
+failed and left an INVALID index, drop it in a NEW migration (`DROP INDEX CONCURRENTLY`, in a
+file of index statements only) and re-create it in the next one — never edit the released file.
 
 ## Step 6: Clean Up
 
