@@ -186,7 +186,7 @@ ALTER TABLE orders VALIDATE CONSTRAINT fk_user;
 -- DON'T: CREATE INDEX idx_orders_user ON orders (user_id);
 
 -- SAFE: concurrent index creation (allows reads and writes)
--- Flyway: every CONCURRENTLY statement goes ALONE into its own V file
+-- Flyway: CONCURRENTLY index statements only, in their own V file (db-flyway-migrations "Index pattern")
 CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id);
 
 -- IMPORTANT: if concurrent index creation fails (crashes, deadlock),
@@ -261,7 +261,7 @@ DROP INDEX CONCURRENTLY idx_orders_user;
 
 ## Backfill Strategies
 
-Always backfill in batches — never in a single UPDATE. A Flyway migration file is ONE transaction, so a batched backfill with commits between batches cannot live in it. Small tables (a quick single UPDATE) may be backfilled in the V migration; large backfills run as a restartable, idempotent job of the application (or a controlled script run as a release step), between the migration that adds the column and the later migration that adds the constraint. See [backfill-strategies](references/backfill-strategies.md) for batch-by-PK patterns, resumable progress tracking, and tuning guidance.
+Always backfill in batches — never in a single UPDATE. A Flyway migration file is ONE transaction, so a batched backfill with commits between batches cannot live in it. Small tables (a quick single UPDATE) may be backfilled in the V migration; large backfills run as a restartable, idempotent job of the application (or a controlled script run as a release step), between the migration that adds the column and the later migration that adds the constraint. See [backfill-strategies](references/backfill-strategies.md) for batch-by-PK patterns, resumable progress tracking, and tuning guidance. Exception: a column shrink rewrites the table anyway; its cut stays in the `V` file (`db-flyway-migrations`, "A shrink").
 
 ## Migration Validation
 
@@ -295,7 +295,7 @@ Test such migrations on a copy of production data first (see **Testing on a Copy
 
 ## Transaction Strategy
 
-Flyway runs each migration file in its own transaction (on PostgreSQL), so **one file = one transaction**: never write `BEGIN`/`COMMIT` in a migration. To get "separate transactions", split the statements into separate migration files; non-transactional statements (`CREATE/DROP INDEX CONCURRENTLY`) must be alone in their file. The two approaches below translate to: several statements in one file vs. one statement per file.
+Flyway runs each migration file in its own transaction (on PostgreSQL), so **one file = one transaction**: never write `BEGIN`/`COMMIT` in a migration. To get "separate transactions", split the statements into separate migration files; non-transactional statements (`CREATE/DROP INDEX CONCURRENTLY`) get a file of their own that holds only such index statements (the replaced index's drop may join the create: `db-flyway-migrations`, "Index pattern"). The two approaches below translate to: several statements in one file vs. one statement per file.
 
 There are two approaches for executing multiple DDL statements. Each has tradeoffs:
 
@@ -497,6 +497,6 @@ For a full end-to-end walkthrough (plan, test on a copy, validate, release, clea
 Modified for the Elysium Java base (PostgreSQL 18, Flyway, forward-only migrations) — this file has been changed from the original.
 Source: [timescale/pg-aiguide](https://github.com/timescale/pg-aiguide), `skills/postgres-database-migration`,
 Apache License 2.0 (see the repository `LICENSE` and `NOTICE`: Copyright 2025 Timescale, Inc., d/b/a Tiger Data).
-Changes: Flyway context (one file = one transaction, no BEGIN/COMMIT, `SET LOCAL`, backfills outside migrations, CONCURRENTLY alone in its file),
+Changes: Flyway context (one file = one transaction, no BEGIN/COMMIT, `SET LOCAL`, backfills outside migrations, CONCURRENTLY index statements in a file of their own, per db-flyway-migrations "Index pattern"),
 forward-only recovery instead of rollback, PG18 NOT VALID NOT NULL syntax corrected, `now()` treated as stable (fast default),
 testing on a copy of production data instead of provider forks (Neon, PgDog removed), rename aligned with expand/contract.
