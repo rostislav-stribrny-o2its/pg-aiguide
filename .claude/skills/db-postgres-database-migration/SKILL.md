@@ -147,20 +147,20 @@ ALTER TABLE orders RENAME COLUMN amount_new TO amount;
 ```sql
 -- PG 18: a NOT NULL constraint can be added NOT VALID and validated later
 -- (each statement in its own Flyway migration file, so the first lock is released)
-ALTER TABLE orders ADD CONSTRAINT orders_status_nn NOT NULL order_status NOT VALID;
-ALTER TABLE orders VALIDATE CONSTRAINT orders_status_nn;
+ALTER TABLE orders ADD CONSTRAINT orders_order_status_not_null NOT NULL order_status NOT VALID;
+ALTER TABLE orders VALIDATE CONSTRAINT orders_order_status_not_null;
 -- (syntax per the PostgreSQL 18 ALTER TABLE reference; if in doubt use the CHECK pattern below)
 
 -- Any supported version: fast if a validated CHECK constraint already exists
 -- Step 1: add CHECK (non-blocking scan)
-ALTER TABLE orders ADD CONSTRAINT orders_status_nn CHECK (order_status IS NOT NULL) NOT VALID;
-ALTER TABLE orders VALIDATE CONSTRAINT orders_status_nn;
+ALTER TABLE orders ADD CONSTRAINT orders_order_status_check CHECK (order_status IS NOT NULL) NOT VALID;
+ALTER TABLE orders VALIDATE CONSTRAINT orders_order_status_check;
 
 -- Step 2: add NOT NULL (PostgreSQL recognizes the validated CHECK and skips the scan)
 ALTER TABLE orders ALTER COLUMN order_status SET NOT NULL;
 
 -- Step 3: drop the now-redundant CHECK
-ALTER TABLE orders DROP CONSTRAINT orders_status_nn;
+ALTER TABLE orders DROP CONSTRAINT orders_order_status_check;
 
 ```
 
@@ -168,33 +168,33 @@ ALTER TABLE orders DROP CONSTRAINT orders_status_nn;
 
 ```sql
 -- UNSAFE: validates all existing rows while holding a heavy lock
--- DON'T: ALTER TABLE orders ADD CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(id);
+-- DON'T: ALTER TABLE orders ADD CONSTRAINT orders_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id);
 
 -- SAFE: two-step approach
 -- Step 1: add without validation (blocks writes briefly, doesn't scan data)
-ALTER TABLE orders ADD CONSTRAINT fk_user
+ALTER TABLE orders ADD CONSTRAINT orders_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users(id) NOT VALID;
 
 -- Step 2: validate existing rows (allows concurrent reads and writes)
-ALTER TABLE orders VALIDATE CONSTRAINT fk_user;
+ALTER TABLE orders VALIDATE CONSTRAINT orders_user_id_fkey;
 ```
 
 ### Add an Index
 
 ```sql
 -- UNSAFE on large tables: blocks all writes for the entire build
--- DON'T: CREATE INDEX idx_orders_user ON orders (user_id);
+-- DON'T: CREATE INDEX idx_orders_user_id ON orders (user_id);
 
 -- SAFE: concurrent index creation (allows reads and writes)
 -- Flyway: CONCURRENTLY index statements only, in their own V file (db-flyway-migrations "Index pattern")
-CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id);
+CREATE INDEX CONCURRENTLY idx_orders_user_id ON orders (user_id);
 
 -- IMPORTANT: if concurrent index creation fails (crashes, deadlock),
 -- it leaves an INVALID index behind. Check and clean up:
 SELECT indexrelname, idx_scan
 FROM pg_stat_user_indexes
 WHERE schemaname = 'public'
-  AND indexrelname = 'idx_orders_user';
+  AND indexrelname = 'idx_orders_user_id';
 
 -- Check for invalid indexes
 SELECT indexrelid::regclass AS index_name, indisvalid
@@ -202,8 +202,8 @@ FROM pg_index
 WHERE NOT indisvalid;
 
 -- Drop and retry if invalid — as two NEW migrations (one statement each), never by editing the released file
-DROP INDEX CONCURRENTLY idx_orders_user;
-CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id);
+DROP INDEX CONCURRENTLY idx_orders_user_id;
+CREATE INDEX CONCURRENTLY idx_orders_user_id ON orders (user_id);
 ```
 
 ### Add a Unique Constraint
@@ -212,10 +212,10 @@ CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id);
 -- A UNIQUE constraint creates an index. Use CONCURRENTLY to avoid blocking:
 
 -- Step 1 (own V file): create a unique index concurrently
-CREATE UNIQUE INDEX CONCURRENTLY idx_orders_tracking_uniq ON orders (tracking_number);
+CREATE UNIQUE INDEX CONCURRENTLY idx_orders_tracking_number ON orders (tracking_number);
 
 -- Step 2 (next V file): attach it as a constraint (instant)
-ALTER TABLE orders ADD CONSTRAINT orders_tracking_uniq UNIQUE USING INDEX idx_orders_tracking_uniq;
+ALTER TABLE orders ADD CONSTRAINT orders_tracking_number_key UNIQUE USING INDEX idx_orders_tracking_number;
 ```
 
 ### Redefine a Primary Key
@@ -224,14 +224,14 @@ Redefining a PK (e.g., switching from `id` to a composite key, or from `int` to 
 
 ```sql
 -- Step 1: add CHECK NOT NULL constraint without validation (brief lock)
-ALTER TABLE orders ADD CONSTRAINT orders_new_id_nn
+ALTER TABLE orders ADD CONSTRAINT orders_new_id_check
     CHECK (new_id IS NOT NULL) NOT VALID;
 
 -- Step 2: validate existing rows (allows concurrent reads and writes)
-ALTER TABLE orders VALIDATE CONSTRAINT orders_new_id_nn;
+ALTER TABLE orders VALIDATE CONSTRAINT orders_new_id_check;
 
 -- Step 3 (own V file): build unique index concurrently (non-blocking)
-CREATE UNIQUE INDEX CONCURRENTLY idx_orders_new_pkey
+CREATE UNIQUE INDEX CONCURRENTLY idx_orders_new_id
     ON orders (new_id);
 
 -- Step 4 (next V file, together with steps 5 and 6): drop the old PK
@@ -239,10 +239,10 @@ ALTER TABLE orders DROP CONSTRAINT orders_pkey;
 
 -- Step 5: add new PK using the existing index (instant — also implicitly adds NOT NULL)
 ALTER TABLE orders ADD CONSTRAINT orders_pkey
-    PRIMARY KEY USING INDEX idx_orders_new_pkey;
+    PRIMARY KEY USING INDEX idx_orders_new_id;
 
 -- Step 6: drop the now-redundant CHECK constraint
-ALTER TABLE orders DROP CONSTRAINT orders_new_id_nn;
+ALTER TABLE orders DROP CONSTRAINT orders_new_id_check;
 ```
 
 **Why this works:** Step 5 is fast because Postgres reuses the already-built unique index and recognizes the existing CHECK constraint, skipping both the index build and the full-table NOT NULL scan (PG12+).
@@ -251,12 +251,12 @@ ALTER TABLE orders DROP CONSTRAINT orders_new_id_nn;
 
 ```sql
 -- SAFE: instant metadata change
-ALTER TABLE orders DROP CONSTRAINT orders_tracking_uniq;
+ALTER TABLE orders DROP CONSTRAINT orders_tracking_number_key;
 
 -- If dropping a FK that has a supporting index you no longer need:
-ALTER TABLE orders DROP CONSTRAINT fk_user;
+ALTER TABLE orders DROP CONSTRAINT orders_user_id_fkey;
 -- then, in its own V file, only if no other queries use it:
-DROP INDEX CONCURRENTLY idx_orders_user;
+DROP INDEX CONCURRENTLY idx_orders_user_id;
 ```
 
 ## Backfill Strategies
