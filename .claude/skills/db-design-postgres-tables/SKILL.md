@@ -102,7 +102,42 @@ updated_by  BIGINT
   everywhere. Exceptions: uncountable nouns (example: `inventory`) and
   library-defined names (`shedlock`). Avoid reserved words (`user`, `order`).
 - Index names: `idx_<table>_<columns>` (also a `CREATE UNIQUE INDEX`); an inline `PRIMARY KEY` / `UNIQUE` /
-  `REFERENCES` / `CHECK` keeps PostgreSQL's generated name, as every migration does.
+  `REFERENCES` / `CHECK` keeps PostgreSQL's generated name, as every migration does. A constraint named
+  explicitly (`ADD CONSTRAINT`, `NOT VALID` then `VALIDATE`, `EXCLUDE`) is named the way PostgreSQL names
+  its own, `<table>_<columns>_<pkey|key|fkey|check|excl>`, so it starts with the table name and a table
+  rename finds it by that prefix; never `fk_user` or `orders_status_nn`.
+
+#### Module prefixes (only when the application declares them)
+
+Objects of one module sort and read together in the database: one schema holds every module
+(ADR-STACK-00005 point 12). This is a naming convention only: no grants per module, no PL/pgSQL layer.
+The rule applies to **new** database objects only; existing objects keep their names, including the
+tables of the canonical module `counter`. The module → prefix list is the application's value (its
+`app-*` supplement and `docs/design/database/`); this skill declares none. Without a declared list there
+are no prefixes.
+
+| Object | Name | Example (module `fin`) |
+|---|---|---|
+| prefix | 2–4 lowercase letters + `_`, one per module, unique | `fin_` |
+| table | `<prefix><plural noun>` | `fin_invoices`, `fin_invoice_items` |
+| view | `<prefix>v_<name>` | `fin_v_open_invoices` |
+| materialized view | `<prefix>mv_<name>` | `fin_mv_monthly_totals` |
+| function (integrity, immutability or audit only, ADR-STACK-00005 point 3) | `<prefix>fn_<name>` | `fin_fn_forbid_update` |
+| trigger | `trg_<table>_<purpose>` (the table already carries the prefix) | `trg_fin_invoices_append_only` |
+| sequence (explicit ones only; identity columns keep the generated name) | `<prefix>seq_<name>` | `fin_seq_invoice_number` |
+| index | unchanged: `idx_<table>_<columns>` | `idx_fin_invoices_customer_id` |
+| inline PK / FK / UNIQUE / CHECK | unchanged: PostgreSQL's generated name (it contains the table name) | `fin_invoices_pkey` |
+| primary key column | unchanged: `id` | `id` |
+| foreign key column | `<referenced table, singular, WITHOUT prefix>_id` | `invoice_id` (not `fin_invoice_id`) |
+
+- The prefix is the module of the Java package that owns the table. Each table has exactly one owning
+  module; a table shared by several modules belongs to the shared module (for example `core_`).
+- Library tables (`shedlock`, `flyway_schema_history`) never get a prefix. Reference data (system enums
+  and managed code lists, ADR-STACK-00005 point 8) follows the same rule: `fin_invoice_states`.
+- An existing table gets its prefix only through a new migration: `ALTER TABLE … RENAME TO …`, together
+  with its views, explicit sequences, `idx_<table>_*` indexes and the constraints and identity sequence
+  derived from the old name. A deployed migration is never edited (ADR-STACK-00005 point 11). Whether and
+  when to rename is the application's decision.
 
 ## Example (the one example set of the stack's database skills)
 
@@ -168,6 +203,7 @@ CREATE INDEX idx_customer_note_customer_id ON customer_note (customer_id);
 - Agent creates `ENUM` types or `CHECK (status IN (…))` for a NEW enum column — lookup table with FK (an existing free-text column: DB-004 exception)
 - Agent uses `timestamp` without zone, `float` for money or `varchar` in a `text` schema — binding types
 - Agent mixes naming conventions inside one schema — table names are plural (`persons`, `roles`, `counters`; exception: `shedlock`) and FKs are `<referenced table, singular>_id`
+- Agent prefixes a foreign key column or a library table with a module prefix — Naming, module prefixes
 - Agent treats partitioning, extensions or RLS in reference.md as defaults — only on decision
 
 ## Provenance
